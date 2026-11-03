@@ -1,0 +1,9 @@
+description: A Stream Deck on the ESP32-S3's USB host port, and key images drawn on the device.
+license: MIT
+dependencies:
+  idf: ">=5.1"
+  espressif/usb_host_hid:
+    version: "^1.0.3"
+    require: public
+  espressif/qrcode: "*"
+  espressif/esp_new_jpeg: "*"

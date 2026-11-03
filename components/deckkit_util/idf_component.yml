@@ -1,0 +1,4 @@
+description: Text checks, wrap-safe deadlines, and pairing and session cryptography.
+license: MIT
+dependencies:
+  idf: ">=5.1"
