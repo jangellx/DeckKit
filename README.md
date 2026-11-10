@@ -27,9 +27,11 @@ dependencies:
     version: v1.0.0
 ```
 
-To work on DeckKit and a project together, add `override_path` pointing at a local checkout
-(`override_path: ../../DeckKit/components/deckkit_deck`, relative to the manifest), so the
-project builds from the files on disk. Take it out before tagging a release.
+To work on DeckKit and a project together, switch the project's DeckKit entries to a local
+`path:` (for example `path: ../../DeckKit/components/deckkit_deck`, relative to the manifest)
+while you work, without committing it, then tag DeckKit and point `version:` at the new tag.
+The component manager's `override_path` would be neater, but PlatformIO doesn't reliably
+honor it.
 
 ## Tools
 
