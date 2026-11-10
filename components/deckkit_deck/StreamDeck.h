@@ -17,6 +17,7 @@
 // model's own wire order.
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -139,6 +140,7 @@ private:
 	static void usbLibraryTask( void *arg );
 	static void clientTask( void *arg );
 	static void deviceTask( void *arg );
+	static void portWatchTask( void *arg );
 	static void driverCallback( hid_host_device_handle_t handle, const hid_host_driver_event_t event, void *arg );
 	static void interfaceCallback( hid_host_device_handle_t handle, const hid_host_interface_event_t event, void *arg );
 	static void clientEventCallback( const usb_host_client_event_msg_t *message, void *arg );
@@ -188,4 +190,5 @@ private:
 	bool                     useInterrupt_ = false;
 	bool                     outShrunk_    = false;     // shrinkOversizedOut() cut its packets to 64 bytes
 	bool                     stuck_        = false;     // a transfer never completed; wait for unplug
+	std::atomic<bool>        enumerated_   { false };   // a device is on the port and enumerated
 };

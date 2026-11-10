@@ -94,7 +94,17 @@ namespace {
 	constexpr int      kOpenAttempts     = 50;
 	constexpr uint32_t kOpenRetryDelay   = 10;     // ms
 
-	// Tasks: the USB host library's, our client's and the HID driver's on core 0, and deviceTask().
+	// With nothing enumerated on the port for this long, portWatchTask() turns the root port off
+	// and on so the host looks for a device again: a deck plugged in while its startup current
+	// pulled the 5 V down can be left attached but never enumerated ("Root port reset failed").
+	// Quickly at first, then less often, since an empty port also has nothing enumerated.
+	constexpr uint32_t kPortRetryDelay     = 5000;    // ms
+	constexpr uint32_t kSlowPortRetryDelay = 30000;   // ms
+	constexpr int      kQuickPortRetries   = 3;
+	constexpr uint32_t kPortOffTime        = 500;     // ms the port stays off
+
+	// Tasks: the USB host library's, our client's and the HID driver's on core 0, and deviceTask()
+	// and portWatchTask().
 	constexpr uint32_t    kTaskStack          = 4096;   // bytes, every task
 	constexpr UBaseType_t kUsbPriority        = 5;
 	constexpr BaseType_t  kUsbCore            = 0;
@@ -197,6 +207,7 @@ bool StreamDeck::begin() {
 	}
 
 	xTaskCreate( deviceTask, "deck", kTaskStack, this, kDevicePriority, nullptr );
+	xTaskCreate( portWatchTask, "usb_port", kTaskStack, this, kDevicePriority, nullptr );
 	ESP_LOGI( TAG, "USB host ready" );
 	return true;
 }
@@ -261,6 +272,28 @@ void StreamDeck::usbLibraryTask( void * ) {
 	}
 }
 
+// Turns the root port off and on while nothing has enumerated on it (see kPortRetryDelay).
+// A device that enumerates, deck or not, stops it until it's unplugged.
+void StreamDeck::portWatchTask( void *arg ) {
+	StreamDeck *self    = static_cast<StreamDeck *>( arg );
+	int         retries = 0;
+	while( true ) {
+		vTaskDelay( pdMS_TO_TICKS( retries < kQuickPortRetries ? kPortRetryDelay : kSlowPortRetryDelay ) );
+		if( self->enumerated_ ) {
+			retries = 0;
+			continue;
+		}
+		if( retries < kQuickPortRetries )
+			ESP_LOGI( TAG, "Nothing on the USB port; turning it off and on to look again" );
+		retries++;
+		usb_host_lib_set_root_port_power( false );
+		vTaskDelay( pdMS_TO_TICKS( kPortOffTime ) );
+		esp_err_t err = usb_host_lib_set_root_port_power( true );
+		if( err != ESP_OK )
+			ESP_LOGW( TAG, "Couldn't turn the USB port back on: %s", esp_err_to_name( err ) );
+	}
+}
+
 // Runs our client's completion callbacks (control transfers submitted through client_).
 void StreamDeck::clientTask( void *arg ) {
 	StreamDeck *self = static_cast<StreamDeck *>( arg );
@@ -275,10 +308,12 @@ void StreamDeck::clientEventCallback( const usb_host_client_event_msg_t *message
 	StreamDeck *self = static_cast<StreamDeck *>( arg );
 	if( message->event == USB_HOST_CLIENT_EVENT_DEV_GONE ) {
 		ESP_LOGI( TAG, "USB device unplugged" );
+		self->enumerated_ = false;
 		return;
 	}
 	if( message->event != USB_HOST_CLIENT_EVENT_NEW_DEV )
 		return;
+	self->enumerated_ = true;
 
 	uint8_t                  address = message->new_dev.address;
 	usb_device_handle_t      device  = nullptr;
