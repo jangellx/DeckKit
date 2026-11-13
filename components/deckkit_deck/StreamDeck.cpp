@@ -113,6 +113,8 @@ namespace {
 
 	constexpr UBaseType_t kEventQueueLength   = 64;
 	constexpr UBaseType_t kRequestQueueLength = 8;
+	// How long the HID driver's callbacks wait for room in the request queue (deviceTask drains it).
+	constexpr uint32_t    kRequestWait        = 1000;   // ms
 
 	// Calls fn( ep ) for each interrupt OUT endpoint of interface `number`.
 	template <typename Fn>
@@ -230,9 +232,9 @@ bool StreamDeck::isConnected() const {
 StreamDeck::UsbDevice StreamDeck::lastUsbDevice() const {
 	if( !mutex_ )   // no USB host: a computer is on the port
 		return {};
-	xSemaphoreTake( mutex_, portMAX_DELAY );
+	portENTER_CRITICAL( &usbDeviceLock_ );
 	UsbDevice copy = usbDevice_;
-	xSemaphoreGive( mutex_ );
+	portEXIT_CRITICAL( &usbDeviceLock_ );
 	return copy;
 }
 
@@ -280,13 +282,17 @@ void StreamDeck::usbLibraryTask( void * ) {
 }
 
 // Turns the root port off and on while nothing has enumerated on it (see kPortRetryDelay).
-// A device that enumerates, deck or not, stops it until it's unplugged.
-void StreamDeck::portWatchTask( void *arg ) {
-	StreamDeck *self    = static_cast<StreamDeck *>( arg );
-	int         retries = 0;
+// A device that enumerates, deck or not, stops it until it's unplugged. Asks the host what's
+// enumerated rather than following our client's events: ESP-IDF sends DEV_GONE only to
+// clients that kept the device open, so after anything but our deck was unplugged, a flag set
+// by events stayed "enumerated" and this never looked again.
+void StreamDeck::portWatchTask( void * ) {
+	int retries = 0;
 	while( true ) {
 		vTaskDelay( pdMS_TO_TICKS( retries < kQuickPortRetries ? kPortRetryDelay : kSlowPortRetryDelay ) );
-		if( self->enumerated_ ) {
+		uint8_t addresses[4];
+		int     count = 0;
+		if( usb_host_device_addr_list_fill( sizeof( addresses ), addresses, &count ) == ESP_OK && count > 0 ) {
 			retries = 0;
 			continue;
 		}
@@ -315,12 +321,10 @@ void StreamDeck::clientEventCallback( const usb_host_client_event_msg_t *message
 	StreamDeck *self = static_cast<StreamDeck *>( arg );
 	if( message->event == USB_HOST_CLIENT_EVENT_DEV_GONE ) {
 		ESP_LOGI( TAG, "USB device unplugged" );
-		self->enumerated_ = false;
 		return;
 	}
 	if( message->event != USB_HOST_CLIENT_EVENT_NEW_DEV )
 		return;
-	self->enumerated_ = true;
 
 	uint8_t                  address = message->new_dev.address;
 	usb_device_handle_t      device  = nullptr;
@@ -356,11 +360,14 @@ void StreamDeck::clientEventCallback( const usb_host_client_event_msg_t *message
 	self->recordUsbDevice( seen );
 }
 
-// Keeps what was plugged in for lastUsbDevice() and tells the owner.
+// Keeps what was plugged in for lastUsbDevice() and tells the owner. Under its own lock, not
+// mutex_: this runs on clientTask, which also completes our control transfers, and deviceTask
+// holds mutex_ while it waits for one. Waiting here for mutex_ would keep that transfer from
+// ever completing.
 void StreamDeck::recordUsbDevice( const UsbDevice &device ) {
-	xSemaphoreTake( mutex_, portMAX_DELAY );
+	portENTER_CRITICAL( &usbDeviceLock_ );
 	usbDevice_ = device;
-	xSemaphoreGive( mutex_ );
+	portEXIT_CRITICAL( &usbDeviceLock_ );
 	post( EventType::UsbDevice );
 }
 
@@ -396,7 +403,8 @@ void StreamDeck::driverCallback( hid_host_device_handle_t handle, const hid_host
 	StreamDeck *self = static_cast<StreamDeck *>( arg );
 	if( event == HID_HOST_DRIVER_EVENT_CONNECTED ) {
 		Request request = { RequestType::Connected, handle };
-		xQueueSend( self->requests_, &request, 0 );
+		if( xQueueSend( self->requests_, &request, pdMS_TO_TICKS( kRequestWait ) ) != pdTRUE )
+			ESP_LOGE( TAG, "Request queue full; a HID interface that connected is ignored" );
 	}
 }
 
@@ -412,8 +420,11 @@ void StreamDeck::interfaceCallback( hid_host_device_handle_t handle, const hid_h
 			break;
 		}
 		case HID_HOST_INTERFACE_EVENT_DISCONNECTED: {
+			// Never dropped silently: a lost Disconnected left the deck "connected" for good, and
+			// every deck after it refused as a second one.
 			Request request = { RequestType::Disconnected, handle };
-			xQueueSend( self->requests_, &request, 0 );
+			if( xQueueSend( self->requests_, &request, pdMS_TO_TICKS( kRequestWait ) ) != pdTRUE )
+				ESP_LOGE( TAG, "Request queue full; a HID interface that disconnected wasn't closed" );
 			break;
 		}
 		case HID_HOST_INTERFACE_EVENT_TRANSFER_ERROR:
@@ -682,7 +693,6 @@ void StreamDeck::readFeatureString( hid_host_device_handle_t handle, uint8_t rep
 // really takes 64-byte packets (128-byte ones fail, and it ignores SET_REPORT), and it
 // reassembles them into full 1024-byte reports.
 void StreamDeck::shrinkOversizedOut( hid_host_device_handle_t handle ) {
-	outShrunk_ = false;
 	hid_host_dev_params_t params = {};
 	usb_device_handle_t   device = nullptr;
 	esp_err_t err = hid_host_device_get_params( handle, &params );
@@ -708,7 +718,6 @@ void StreamDeck::shrinkOversizedOut( hid_host_device_handle_t handle ) {
 			usb_ep_desc_t *ep = const_cast<usb_ep_desc_t *>( found );
 			ESP_LOGI( TAG, "Interrupt OUT 0x%02X is %u bytes, more than the host takes; sending %u-byte packets", ep->bEndpointAddress, USB_EP_DESC_GET_MPS( ep ), kFullSpeedPacket );
 			ep->wMaxPacketSize = kFullSpeedPacket;
-			outShrunk_         = true;
 		} );
 	}
 	usb_host_device_close( client_, device );
@@ -766,14 +775,19 @@ bool StreamDeck::openOutput( hid_host_device_handle_t handle ) {
 // Frees the output transfer and closes our handle on the deck. Caller holds mutex_.
 void StreamDeck::closeOutput() {
 	if( transfer_ ) {
-		// A stuck transfer completes (with an error) once the device is gone.
-		if( stuck_ )
-			xSemaphoreTake( transferSem_, pdMS_TO_TICKS( kTransferTimeout ) );
-		usb_host_transfer_free( transfer_ );
+		// A stuck transfer completes (with an error) once the device is gone. If it still
+		// hasn't, the host may own it: freeing it then would be a use after free (ESP-IDF's
+		// usb_host_transfer_free doesn't check), so it's left allocated instead.
+		if( stuck_ && xSemaphoreTake( transferSem_, pdMS_TO_TICKS( kTransferTimeout ) ) != pdTRUE )
+			ESP_LOGE( TAG, "The stuck output transfer never completed; leaving it allocated" );
+		else
+			usb_host_transfer_free( transfer_ );
 		transfer_ = nullptr;
 	}
 	if( device_ ) {
-		usb_host_device_close( client_, device_ );
+		esp_err_t err = usb_host_device_close( client_, device_ );
+		if( err != ESP_OK )
+			ESP_LOGW( TAG, "usb_host_device_close failed: %s", esp_err_to_name( err ) );
 		device_ = nullptr;
 	}
 }

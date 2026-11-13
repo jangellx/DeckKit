@@ -60,6 +60,7 @@ bool StreamDeck::identifyMirabox( hid_host_device_handle_t handle, uint16_t vid,
 	info.transform  = transformFor( model->rotation );
 	info.reversed   = false;
 	info.imageLimit = model->imageLimit;
+	info.pressesOnly = !model->reportsKeyUp;
 	ESP_LOGW( TAG, "%s (%04X:%04X): experimental support%s", model->name, vid, pid,
 			  model->tested ? "" : ", and not tested on this model by DeckBridge either" );
 	return true;

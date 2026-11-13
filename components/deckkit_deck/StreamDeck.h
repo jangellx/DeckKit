@@ -6,8 +6,9 @@
 //   Mini      Mini, Mini 2022, Mini Discord, 6-Key Module: BMP images in 1024-byte reports
 //   Original  the first 15-key Stream Deck: BMP images in 8191-byte reports
 //   Main      everything since (MK.2, XL, Neo, Plus, Pedal, modules): JPEG images
-// Only the keys are used; the Neo's info screen, the Plus's dials and touch strip, and touch
-// keys are ignored. Protocol: https://docs.elgato.com/streamdeck/hid/
+// The keys are used, and the Neo's info bar and the +'s touch strip can show an image
+// (setScreenImage); the +'s dials, touch input and the Neo's touch keys are ignored.
+// Protocol: https://docs.elgato.com/streamdeck/hid/
 //
 // Experimental: Mirabox's decks and the brands that sell its boards (Ajazz, Fifine and others),
 // whose protocol is in MiraboxProtocol.h and whose USB is in StreamDeckMirabox.cpp. They take
@@ -105,6 +106,9 @@ public:
 		Transform screenTransform;
 		// The largest key image the deck takes, in bytes; 0 if there's no limit beyond kMaxImageSize.
 		uint16_t  imageLimit;
+		// It reports presses but not releases (the Mirabox 293S board): each KeyDown comes with
+		// its KeyUp at once, so a key can't be held. False for every Elgato deck.
+		bool      pressesOnly;
 
 		uint8_t keyCount() const { return rows * cols; }
 	};
@@ -217,11 +221,12 @@ private:
 
 	QueueHandle_t            events_       = nullptr;
 	QueueHandle_t            requests_     = nullptr;
-	SemaphoreHandle_t        mutex_        = nullptr;   // guards handle_, info_, usbDevice_, report_ and the output transfer
+	SemaphoreHandle_t        mutex_        = nullptr;   // guards handle_, info_, the mirabox_ fields, report_ and the output transfer
 
 	hid_host_device_handle_t handle_       = nullptr;
 	Info                     info_         = {};
 	UsbDevice                usbDevice_    = {};
+	mutable portMUX_TYPE     usbDeviceLock_ = portMUX_INITIALIZER_UNLOCKED;   // guards usbDevice_ (see recordUsbDevice())
 	uint8_t                  keyStates_[kMaxKeys] = {};
 	uint8_t                 *report_       = nullptr;   // one output report, built before sending
 	// A Mirabox deck's model and packet size (nullptr and 0 for an Elgato deck), its last
@@ -244,7 +249,5 @@ private:
 	uint8_t                  outEndpoint_  = 0;         // 0 if the interface has none
 	uint16_t                 outPacket_    = 0;         // its max packet size
 	bool                     useInterrupt_ = false;
-	bool                     outShrunk_    = false;     // shrinkOversizedOut() cut its packets to 64 bytes
 	bool                     stuck_        = false;     // a transfer never completed; wait for unplug
-	std::atomic<bool>        enumerated_   { false };   // a device is on the port and enumerated
 };

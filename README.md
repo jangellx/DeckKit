@@ -38,6 +38,7 @@ honor it.
 
 - `tools/text_test/run.sh` builds `Text.cpp` on the Mac with the address and
   undefined-behavior sanitizers and runs its tests.
+- `tools/timing_test/run.sh` checks `Timing.h`'s deadlines across `millis()`' 49-day wrap.
 - `tools/mirabox_test/run.sh` builds `MiraboxProtocol.cpp` on the Mac the same way and checks
   the Mirabox commands, image pieces, key reports, model table and report descriptor parsing.
 - `tools/improv_test/run.sh` builds `ImprovProtocol.cpp` the same way and checks it against packets built as ESP Web Tools builds them.
