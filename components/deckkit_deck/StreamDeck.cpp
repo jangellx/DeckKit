@@ -628,6 +628,9 @@ void StreamDeck::handleInputReport( const uint8_t *data, size_t length ) {
 		handleMiraboxInput( data, length );
 		return;
 	}
+	// Whole reports only: a tail continuing a long report has no report ID of its own.
+	if( rawInput_ && length > 0 && data[0] == kKeyReportID )
+		rawInput_( data, length, rawContext_ );
 	bool    main  = info_.protocol == Protocol::Main;
 	size_t  first = main ? 4 : 1;
 	uint8_t count = info_.keyCount();

@@ -135,6 +135,28 @@ public:
 	// 0–100.
 	esp_err_t setBrightness( uint8_t percent );
 
+	// MARK: Raw reports
+
+	// An Elgato deck's own HID reports, as bytes, for passing on unchanged (TetherDeck, standing
+	// in for a Network Dock, carries them between the deck and Elgato's app). Each report starts
+	// with its report ID. Not for Mirabox decks, whose reports Elgato's software doesn't speak.
+	// See StreamDeckRaw.cpp.
+
+	// Called with each input report the deck sends (keys, and the dials and touch strip of a +),
+	// on the HID driver's task: copy what's needed and return. Set it before begin().
+	using RawInputHandler = void ( * )( const uint8_t *report, size_t length, void *context );
+	void setRawInputHandler( RawInputHandler handler, void *context );
+
+	// Sends an output report (an image page, say), at most outputSize() bytes.
+	esp_err_t sendOutputReport( const uint8_t *report, size_t length );
+
+	// Sets a feature report (brightness, a reset).
+	esp_err_t setFeatureReport( const uint8_t *report, size_t length );
+
+	// Gets feature report `reportID` into out; length is out's size going in, and the bytes
+	// received coming back.
+	esp_err_t getFeatureReport( uint8_t reportID, uint8_t *out, size_t &length );
+
 private:
 	// Work for deviceTask(), from the HID driver's callbacks.
 	enum class RequestType : uint8_t {
@@ -205,6 +227,8 @@ private:
 	// A Mirabox deck's model and packet size (nullptr and 0 for an Elgato deck), its last
 	// brightness (its keepalive repeats it), and how often it needs one (0: never).
 	const Mirabox::Model    *mirabox_      = nullptr;
+	RawInputHandler          rawInput_     = nullptr;   // setRawInputHandler()
+	void                    *rawContext_   = nullptr;
 	uint16_t                 miraboxPacket_ = 0;
 	uint8_t                  brightness_   = 80;
 	std::atomic<uint32_t>    keepaliveMs_  { 0 };
