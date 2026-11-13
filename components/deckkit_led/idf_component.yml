@@ -1,0 +1,5 @@
+description: The dev kit's RGB LED as a status light, on Espressif's led_strip driver. Needs deckkit_util.
+license: MIT
+dependencies:
+  idf: ">=5.1"
+  espressif/led_strip: "^3.0.0"

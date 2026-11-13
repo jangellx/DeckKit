@@ -1,4 +1,4 @@
-description: Wi-Fi on plain ESP-IDF, with Improv over serial to set the network. Needs deckkit_util.
+description: Wi-Fi on plain ESP-IDF, with Improv over serial and a setup page for phones to set the network. Needs deckkit_util.
 license: MIT
 dependencies:
   idf: ">=5.1"

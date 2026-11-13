@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 
 #include "esp_netif.h"
 
@@ -39,6 +40,10 @@ public:
 	// On a network, with an address.
 	bool isConnected() const { return connected_; }
 
+	// Why the station last lost or failed to join a network (a wifi_err_reason_t), 0 once it
+	// has an address.
+	uint8_t lastReason() const { return lastReason_; }
+
 	// Joins ssid with password, giving up after kTryTimeout. Saved only once it has an address;
 	// until then (and if it fails) the saved network stays.
 	void    tryNetwork( const char *ssid, const char *password );
@@ -47,7 +52,8 @@ public:
 	// Starts a scan; false if the radio won't scan now (it refuses while joining a network).
 	bool   startScan();
 	bool   scanning() const { return scanning_; }
-	// After a scan: the networks found, strongest first, one per name. Returns how many.
+	// The networks the last scan found, strongest first, one per name; they stay until the next
+	// scan finishes. Returns how many.
 	size_t scanResults( Network *out, size_t max );
 
 	esp_netif_t *netif() const { return netif_; }
@@ -60,6 +66,8 @@ private:
 	static void onTryTimeout( void *arg );
 
 	void join( const char *ssid, const char *password );
+	// Reads a finished scan's networks into found_ (ESP-IDF hands them out only once).
+	void collectScan();
 	void loadSaved();
 	void save( const char *ssid, const char *password );
 
@@ -72,7 +80,13 @@ private:
 	char         trySSID_[33] = {};
 	char         tryPassword_[65] = {};
 
+	static constexpr size_t kMaxFound = 32;
+	Network                 found_[kMaxFound] = {};
+	size_t                  foundCount_ = 0;
+	std::mutex              foundLock_;   // found_ and foundCount_
+
 	std::atomic<bool>    connected_ { false };
+	std::atomic<uint8_t> lastReason_ { 0 };
 	std::atomic<bool>    scanning_ { false };
 	std::atomic<Attempt> attempt_ { Attempt::None };
 };

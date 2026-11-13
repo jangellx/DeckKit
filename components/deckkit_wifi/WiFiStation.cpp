@@ -97,8 +97,9 @@ void WiFiStation::tryNetwork( const char *ssid, const char *password ) {
 	strlcpy( tryPassword_, password, sizeof( tryPassword_ ) );
 	char safe[kSafeText];
 	ESP_LOGI( TAG, "Trying %s", Text::printable( trySSID_, safe, sizeof( safe ) ) );
-	attempt_   = Attempt::Joining;
-	connected_ = false;
+	attempt_    = Attempt::Joining;
+	connected_  = false;
+	lastReason_ = 0;
 	esp_timer_stop( timer( retry_ ) );
 	restart( tryTimer_, kTryTimeout );
 	join( trySSID_, tryPassword_ );
@@ -133,6 +134,7 @@ void WiFiStation::onEvent( void *arg, esp_event_base_t base, int32_t id, void *d
 	} else if( base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED ) {
 		bool wasConnected = self->connected_.exchange( false );
 		auto *info        = static_cast<wifi_event_sta_disconnected_t *>( data );
+		self->lastReason_ = info->reason;
 		if( self->attempt_ == Attempt::Joining ) {
 			restart( self->retry_, kTryRetryDelay );   // until onTryTimeout() gives up
 		} else if( self->hasSaved() ) {
@@ -141,10 +143,12 @@ void WiFiStation::onEvent( void *arg, esp_event_base_t base, int32_t id, void *d
 			restart( self->retry_, kRetryDelay );
 		}
 	} else if( base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE ) {
+		self->collectScan();
 		self->scanning_ = false;
 	} else if( base == IP_EVENT && id == IP_EVENT_STA_GOT_IP ) {
 		auto *info = static_cast<ip_event_got_ip_t *>( data );
-		self->connected_ = true;
+		self->connected_  = true;
+		self->lastReason_ = 0;
 		if( self->attempt_ == Attempt::Joining ) {
 			esp_timer_stop( timer( self->tryTimer_ ) );
 			self->save( self->trySSID_, self->tryPassword_ );
@@ -202,33 +206,40 @@ bool WiFiStation::startScan() {
 	return true;
 }
 
-size_t WiFiStation::scanResults( Network *out, size_t max ) {
+void WiFiStation::collectScan() {
 	uint16_t count = kMaxScanned;
-	auto    *found = static_cast<wifi_ap_record_t *>( calloc( kMaxScanned, sizeof( wifi_ap_record_t ) ) );
-	if( !found ) {
+	auto    *records = static_cast<wifi_ap_record_t *>( calloc( kMaxScanned, sizeof( wifi_ap_record_t ) ) );
+	if( !records ) {
 		esp_wifi_clear_ap_list();
-		return 0;
+		return;
 	}
-	if( esp_wifi_scan_get_ap_records( &count, found ) != ESP_OK )
+	if( esp_wifi_scan_get_ap_records( &count, records ) != ESP_OK )
 		count = 0;
 
 	// One per name, at its strongest.
-	size_t networks = 0;
+	std::lock_guard<std::mutex> lock( foundLock_ );
+	foundCount_ = 0;
 	for( uint16_t i = 0; i < count; i++ ) {
-		const char *ssid = (const char *)found[i].ssid;
+		const char *ssid = (const char *)records[i].ssid;
 		if( !ssid[0] )
 			continue;
-		Network *same = std::find_if( out, out + networks, [&]( const Network &n ) { return strcmp( n.ssid, ssid ) == 0; } );
-		if( same != out + networks ) {
-			same->rssi = std::max( same->rssi, found[i].rssi );
-		} else if( networks < max ) {
-			strlcpy( out[networks].ssid, ssid, sizeof( out[networks].ssid ) );
-			out[networks].rssi   = found[i].rssi;
-			out[networks].secure = found[i].authmode != WIFI_AUTH_OPEN;
-			networks++;
+		Network *same = std::find_if( found_, found_ + foundCount_, [&]( const Network &n ) { return strcmp( n.ssid, ssid ) == 0; } );
+		if( same != found_ + foundCount_ ) {
+			same->rssi = std::max( same->rssi, records[i].rssi );
+		} else if( foundCount_ < kMaxFound ) {
+			strlcpy( found_[foundCount_].ssid, ssid, sizeof( found_[foundCount_].ssid ) );
+			found_[foundCount_].rssi   = records[i].rssi;
+			found_[foundCount_].secure = records[i].authmode != WIFI_AUTH_OPEN;
+			foundCount_++;
 		}
 	}
-	free( found );
-	std::sort( out, out + networks, []( const Network &a, const Network &b ) { return a.rssi > b.rssi; } );
-	return networks;
+	free( records );
+	std::sort( found_, found_ + foundCount_, []( const Network &a, const Network &b ) { return a.rssi > b.rssi; } );
+}
+
+size_t WiFiStation::scanResults( Network *out, size_t max ) {
+	std::lock_guard<std::mutex> lock( foundLock_ );
+	size_t count = std::min( max, foundCount_ );
+	std::copy( found_, found_ + count, out );
+	return count;
 }

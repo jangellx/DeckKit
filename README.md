@@ -8,9 +8,10 @@ that's being built next.
 |---|---|
 | `deckkit_deck` | The Stream Deck driver (USB host, every model with keys) and `KeyImage`, which draws the key images the firmware makes itself: text, QR codes and the pairing code, encoded as BMP or JPEG for the deck. Experimental: Mirabox's decks and their rebadges (Ajazz, Fifine, upHere, Mars Gaming, Redragon and others), in `MiraboxProtocol.h`. |
 | `deckkit_util` | Checks on text that comes from outside (`Text`), wrap-safe millisecond deadlines (`Timing`), and the X25519, HMAC and AES-GCM used for pairing and sessions (`Crypto`). |
-| `deckkit_wifi` | Wi-Fi on plain ESP-IDF: a station that joins the saved network and saves a new one only once it works (`WiFiStation`), and Improv Wi-Fi over serial for setting it from ESP Web Tools, improv-wifi.com in Chrome, or ESPDeck Bridge's USB Setup (`ImprovSerial`). Needs `deckkit_util`. The network is kept in plain NVS for now. |
+| `deckkit_wifi` | Wi-Fi on plain ESP-IDF: a station that joins the saved network and saves a new one only once it works (`WiFiStation`), Improv Wi-Fi over serial for setting it from ESP Web Tools, improv-wifi.com in Chrome, or ESPDeck Bridge's USB Setup (`ImprovSerial`), and a setup page for phones: its own access point with a random password, captive-portal DNS and the page (`SetupPage`). Needs `deckkit_util`. The network is kept in plain NVS for now. |
+| `deckkit_led` | The dev kit's RGB LED as a status light, with ESPDeck's colors (`StatusLight`), on Espressif's `led_strip` driver and its own task. Needs `deckkit_util`. |
 
-The components are plain ESP-IDF. `deckkit_deck` and `deckkit_util` work with or without Arduino as a component; `deckkit_wifi` drives Wi-Fi itself, so it's for plain ESP-IDF projects.
+The components are plain ESP-IDF. `deckkit_deck` and `deckkit_util` work with or without Arduino as a component; `deckkit_wifi` and `deckkit_led` drive the hardware themselves, so they're for plain ESP-IDF projects.
 
 ## Using it
 
@@ -42,6 +43,7 @@ honor it.
 - `tools/mirabox_test/run.sh` builds `MiraboxProtocol.cpp` on the Mac the same way and checks
   the Mirabox commands, image pieces, key reports, model table and report descriptor parsing.
 - `tools/improv_test/run.sh` builds `ImprovProtocol.cpp` the same way and checks it against packets built as ESP Web Tools builds them.
+- `tools/setup_test/run.sh` checks `SetupProtocol.cpp`: the setup page's form fields and its DNS answers.
 - `tools/make_font.swift` regenerates `components/deckkit_deck/Font.h` from Inter.
 
 ## License
