@@ -1,4 +1,5 @@
 #include "StreamDeck.h"
+#include "MiraboxProtocol.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -260,6 +261,12 @@ uint8_t StreamDeck::wireKey( uint8_t key ) const {
 	return row * info_.cols + ( info_.cols - 1 - col );
 }
 
+size_t StreamDeck::outputSize() const {
+	if( mirabox_ )
+		return miraboxPacket_ + ( mirabox_->reportID ? 1 : 0 );
+	return reportSize( info_.protocol );
+}
+
 // MARK: - Tasks and callbacks
 
 // The USB host library's event loop.
@@ -370,8 +377,13 @@ void StreamDeck::deviceTask( void *arg ) {
 	StreamDeck *self = static_cast<StreamDeck *>( arg );
 	Request     request;
 	while( true ) {
-		if( xQueueReceive( self->requests_, &request, portMAX_DELAY ) != pdTRUE )
+		// A Mirabox deck drops the host without a keepalive; an Elgato one needs none.
+		uint32_t keepalive = self->keepaliveMs_;
+		if( xQueueReceive( self->requests_, &request, keepalive ? pdMS_TO_TICKS( keepalive ) : portMAX_DELAY ) != pdTRUE ) {
+			if( keepalive )
+				self->sendKeepalive();
 			continue;
+		}
 		if( request.type == RequestType::Connected )
 			self->handleConnected( request.handle );
 		else
@@ -428,8 +440,10 @@ void StreamDeck::handleConnected( hid_host_device_handle_t handle ) {
 
 	hid_host_dev_info_t deviceInfo = {};
 	hid_host_get_device_info( handle, &deviceInfo );
-	Info info = {};
-	if( !identify( handle, deviceInfo.VID, deviceInfo.PID, info ) ) {
+	Info                  info    = {};
+	const Mirabox::Model *mirabox = nullptr;
+	uint16_t              packet  = 0;
+	if( !identify( handle, deviceInfo.VID, deviceInfo.PID, info, mirabox, packet ) ) {
 		ESP_LOGW( TAG, "Ignoring HID device %04X:%04X (not a known Stream Deck)", deviceInfo.VID, deviceInfo.PID );
 		hid_host_device_close( handle );
 		return;
@@ -444,7 +458,15 @@ void StreamDeck::handleConnected( hid_host_device_handle_t handle ) {
 		return;
 	}
 
-	if( info.protocol == Protocol::Main ) {
+	if( mirabox ) {
+		// No feature reports: its USB serial number, as far as it's ASCII.
+		size_t written = 0;
+		for( size_t i = 0; i < HID_STR_DESC_MAX_LENGTH && deviceInfo.iSerialNumber[i] && written + 1 < sizeof( info.serial ); i++ ) {
+			wchar_t c = deviceInfo.iSerialNumber[i];
+			if( c >= 0x20 && c < 0x7F ) info.serial[written++] = (char)c;
+		}
+		info.serial[written] = '\0';
+	} else if( info.protocol == Protocol::Main ) {
 		readFeatureString( handle, 0x06, kLongFeatureSize, 2, info.serial, sizeof( info.serial ) );
 		readFeatureString( handle, 0x05, kLongFeatureSize, 6, info.firmware, sizeof( info.firmware ) );
 	} else {
@@ -467,7 +489,9 @@ void StreamDeck::handleConnected( hid_host_device_handle_t handle ) {
 	// info_ is in place before input reports start, since handleInputReport() reads it
 	// without the mutex.
 	xSemaphoreTake( mutex_, portMAX_DELAY );
-	info_ = info;
+	info_          = info;
+	mirabox_       = mirabox;
+	miraboxPacket_ = packet;
 	memset( keyStates_, 0, sizeof( keyStates_ ) );
 	bool ready = info.format == Format::None || openOutput( handle );
 	if( ready )
@@ -477,7 +501,8 @@ void StreamDeck::handleConnected( hid_host_device_handle_t handle ) {
 	if( !ready || hid_host_device_start( handle ) != ESP_OK ) {
 		ESP_LOGW( TAG, "Couldn't start the Stream Deck" );
 		xSemaphoreTake( mutex_, portMAX_DELAY );
-		handle_ = nullptr;
+		handle_  = nullptr;
+		mirabox_ = nullptr;
 		closeOutput();
 		xSemaphoreGive( mutex_ );
 		hid_host_device_close( handle );
@@ -494,6 +519,10 @@ void StreamDeck::handleConnected( hid_host_device_handle_t handle ) {
 // swallow the start of the next one. And the deck's own sleep timer goes off, so only
 // ESPDeck's decides when the keys go dark.
 void StreamDeck::prepareDeck( hid_host_device_handle_t handle ) {
+	if( mirabox_ ) {
+		prepareMirabox();
+		return;
+	}
 	xSemaphoreTake( mutex_, portMAX_DELAY );
 	Protocol protocol = info_.protocol;
 	if( info_.format != Format::None ) {
@@ -530,7 +559,9 @@ void StreamDeck::handleDisconnected( hid_host_device_handle_t handle ) {
 	xSemaphoreTake( mutex_, portMAX_DELAY );
 	bool ours = handle == handle_;
 	if( ours ) {
-		handle_ = nullptr;
+		handle_      = nullptr;
+		mirabox_     = nullptr;
+		keepaliveMs_ = 0;
 		closeOutput();
 	}
 	xSemaphoreGive( mutex_ );
@@ -544,10 +575,13 @@ void StreamDeck::handleDisconnected( hid_host_device_handle_t handle ) {
 
 // Known models come from the table. Other Elgato devices are asked for their layout with
 // the main protocol's "Get Unit Information" feature report.
-bool StreamDeck::identify( hid_host_device_handle_t handle, uint16_t vid, uint16_t pid, Info &info ) {
+bool StreamDeck::identify( hid_host_device_handle_t handle, uint16_t vid, uint16_t pid, Info &info, const Mirabox::Model *&mirabox, uint16_t &packet ) {
+	mirabox = nullptr;
+	packet  = 0;
 	if( vid != kElgatoVID )
-		return false;
+		return identifyMirabox( handle, vid, pid, info, mirabox, packet );
 
+	info.vid = vid;
 	info.pid = pid;
 	for( const Model &model : kModels ) {
 		if( model.pid != pid )
@@ -590,6 +624,10 @@ bool StreamDeck::identify( hid_host_device_handle_t handle, uint16_t vid, uint16
 // endpoint's 64-byte max packet size, so the tail arrives as separate transfers; only
 // transfers starting with the key report ID count.
 void StreamDeck::handleInputReport( const uint8_t *data, size_t length ) {
+	if( mirabox_ ) {
+		handleMiraboxInput( data, length );
+		return;
+	}
 	bool    main  = info_.protocol == Protocol::Main;
 	size_t  first = main ? 4 : 1;
 	uint8_t count = info_.keyCount();
@@ -709,7 +747,7 @@ bool StreamDeck::openOutput( hid_host_device_handle_t handle ) {
 	useInterrupt_ = outEndpoint_ != 0;
 	ESP_LOGI( TAG, "Output reports go to %s (interface %u)", useInterrupt_ ? "the interrupt OUT endpoint" : "SET_REPORT on the control pipe", interface_ );
 
-	err = usb_host_transfer_alloc( sizeof( usb_setup_packet_t ) + reportSize( info_.protocol ), 0, &transfer_ );
+	err = usb_host_transfer_alloc( sizeof( usb_setup_packet_t ) + outputSize(), 0, &transfer_ );
 	if( err != ESP_OK ) {
 		ESP_LOGW( TAG, "Couldn't allocate the output transfer: %s", esp_err_to_name( err ) );
 		closeOutput();
@@ -763,7 +801,8 @@ esp_err_t StreamDeck::sendReport( size_t length ) {
 		usb_setup_packet_t *setup = (usb_setup_packet_t *)transfer_->data_buffer;
 		setup->bmRequestType = USB_BM_REQUEST_TYPE_DIR_OUT | USB_BM_REQUEST_TYPE_TYPE_CLASS | USB_BM_REQUEST_TYPE_RECIP_INTERFACE;
 		setup->bRequest      = HID_CLASS_SPECIFIC_REQ_SET_REPORT;
-		setup->wValue        = ( HID_REPORT_TYPE_OUTPUT << 8 ) | report_[0];
+		// A Mirabox deck's report starts with its data, unless it has a report ID.
+		setup->wValue        = ( HID_REPORT_TYPE_OUTPUT << 8 ) | ( mirabox_ ? mirabox_->reportID : report_[0] );
 		setup->wIndex        = interface_;
 		setup->wLength       = (uint16_t)length;
 		memcpy( transfer_->data_buffer + sizeof( usb_setup_packet_t ), report_, length );
@@ -827,6 +866,13 @@ esp_err_t StreamDeck::setKeyImage( uint8_t key, const uint8_t *image, size_t len
 	if( !handle_ || key >= info_.keyCount() || info_.format == Format::None ) {
 		xSemaphoreGive( mutex_ );
 		return ESP_ERR_INVALID_STATE;
+	}
+	if( mirabox_ ) {
+		esp_err_t err = sendMiraboxImage( key, image, length );
+		xSemaphoreGive( mutex_ );
+		if( err != ESP_OK )
+			ESP_LOGW( TAG, "Key %u image upload failed: %s", key, esp_err_to_name( err ) );
+		return err;
 	}
 
 	Protocol  protocol = info_.protocol;
@@ -909,7 +955,9 @@ esp_err_t StreamDeck::setBrightness( uint8_t percent ) {
 	xSemaphoreTake( mutex_, portMAX_DELAY );
 	esp_err_t err = ESP_ERR_INVALID_STATE;
 	if( handle_ && info_.format != Format::None ) {
-		if( info_.protocol == Protocol::Main ) {
+		if( mirabox_ ) {
+			err = sendMiraboxBrightness( percent );
+		} else if( info_.protocol == Protocol::Main ) {
 			uint8_t payload[kLongFeatureSize] = { 0x03, 0x08, percent };
 			err = hid_class_request_set_report( handle_, HID_REPORT_TYPE_FEATURE, payload[0], payload, sizeof( payload ) );
 		} else {

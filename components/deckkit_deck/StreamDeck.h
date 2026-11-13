@@ -9,6 +9,10 @@
 // Only the keys are used; the Neo's info screen, the Plus's dials and touch strip, and touch
 // keys are ignored. Protocol: https://docs.elgato.com/streamdeck/hid/
 //
+// Experimental: Mirabox's decks and the brands that sell its boards (Ajazz, Fifine and others),
+// whose protocol is in MiraboxProtocol.h and whose USB is in StreamDeckMirabox.cpp. They take
+// JPEG key images, need a keepalive, and some report presses without releases.
+//
 // The model layouts and USB report formats are derived from python-elgato-streamdeck,
 // Copyright (c) Dean Camera, MIT License (https://github.com/abcminiuser/python-elgato-streamdeck).
 // See THIRD-PARTY-NOTICES.md for the full license text.
@@ -29,6 +33,8 @@
 
 constexpr uint8_t kMaxKeys      = 32;          // Stream Deck XL
 constexpr size_t  kMaxImageSize = 64 * 1024;   // 96 px BMPs are ~27 KB, 120 px JPEGs far less
+
+namespace Mirabox { struct Model; }
 
 class StreamDeck {
 public:
@@ -59,6 +65,8 @@ public:
 		Mini,
 		Original,
 		Main,
+		Mirabox,   // Mirabox's own command set (293V3, 293S, K1 Pro and rebadges); experimental
+		Akp05,     // the Ajazz AKP05's variant of it (and rebadges); experimental
 	};
 
 	// The key images' format.
@@ -79,6 +87,7 @@ public:
 
 	// The connected deck.
 	struct Info {
+		uint16_t  vid;
 		uint16_t  pid;
 		char      model[40];
 		Protocol  protocol;
@@ -94,6 +103,8 @@ public:
 		uint16_t  screenWidth;
 		uint16_t  screenHeight;
 		Transform screenTransform;
+		// The largest key image the deck takes, in bytes; 0 if there's no limit beyond kMaxImageSize.
+		uint16_t  imageLimit;
 
 		uint8_t keyCount() const { return rows * cols; }
 	};
@@ -149,8 +160,9 @@ private:
 	void handleConnected( hid_host_device_handle_t handle );
 	void handleDisconnected( hid_host_device_handle_t handle );
 	void handleInputReport( const uint8_t *data, size_t length );
-	// Fills in info for an Elgato device with keys; false for anything else.
-	bool identify( hid_host_device_handle_t handle, uint16_t vid, uint16_t pid, Info &info );
+	// Fills in info for an Elgato device with keys, or a Mirabox one (with its model and the
+	// packet size it declares); false for anything else.
+	bool identify( hid_host_device_handle_t handle, uint16_t vid, uint16_t pid, Info &info, const Mirabox::Model *&mirabox, uint16_t &packet );
 	void readFeatureString( hid_host_device_handle_t handle, uint8_t reportID, size_t length, size_t offset, char *out, size_t outSize );
 	bool openOutput( hid_host_device_handle_t handle );
 	// Shrinks an interrupt OUT endpoint the host can't take, before the interface is claimed.
@@ -166,6 +178,20 @@ private:
 	uint8_t wireKey( uint8_t key ) const;
 	void post( EventType type, uint8_t key = 0 );
 	void recordUsbDevice( const UsbDevice &device );
+	// The size of one output report, for the deck connected (or about to be). Caller holds mutex_.
+	size_t outputSize() const;
+
+	// Mirabox decks (StreamDeckMirabox.cpp). Those that send take mutex_ from the caller.
+	bool identifyMirabox( hid_host_device_handle_t handle, uint16_t vid, uint16_t pid, Info &info, const Mirabox::Model *&model, uint16_t &packet );
+	void prepareMirabox();
+	void handleMiraboxInput( const uint8_t *data, size_t length );
+	esp_err_t sendMiraboxImage( uint8_t key, const uint8_t *image, size_t length );
+	esp_err_t sendMiraboxBrightness( uint8_t percent );
+	// The keepalive these decks need, from deviceTask(); takes mutex_.
+	void sendKeepalive();
+	// Sends a command built by fill( packet ) in report_, after the report ID if the deck uses one.
+	template <typename Fill>
+	esp_err_t sendMiraboxCommand( Fill fill );
 
 	QueueHandle_t            events_       = nullptr;
 	QueueHandle_t            requests_     = nullptr;
@@ -176,6 +202,12 @@ private:
 	UsbDevice                usbDevice_    = {};
 	uint8_t                  keyStates_[kMaxKeys] = {};
 	uint8_t                 *report_       = nullptr;   // one output report, built before sending
+	// A Mirabox deck's model and packet size (nullptr and 0 for an Elgato deck), its last
+	// brightness (its keepalive repeats it), and how often it needs one (0: never).
+	const Mirabox::Model    *mirabox_      = nullptr;
+	uint16_t                 miraboxPacket_ = 0;
+	uint8_t                  brightness_   = 80;
+	std::atomic<uint32_t>    keepaliveMs_  { 0 };
 
 	// Output reports go out on our own USB host client: the HID driver's control transfer
 	// buffer is too small for image reports. They use the interrupt OUT endpoint when the

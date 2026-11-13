@@ -6,7 +6,7 @@ that's being built next.
 
 | Component | What it is |
 |---|---|
-| `deckkit_deck` | The Stream Deck driver (USB host, every model with keys) and `KeyImage`, which draws the key images the firmware makes itself: text, QR codes and the pairing code, encoded as BMP or JPEG for the deck. |
+| `deckkit_deck` | The Stream Deck driver (USB host, every model with keys) and `KeyImage`, which draws the key images the firmware makes itself: text, QR codes and the pairing code, encoded as BMP or JPEG for the deck. Experimental: Mirabox's decks and their rebadges (Ajazz, Fifine, upHere, Mars Gaming, Redragon and others), in `MiraboxProtocol.h`. |
 | `deckkit_util` | Checks on text that comes from outside (`Text`), wrap-safe millisecond deadlines (`Timing`), and the X25519, HMAC and AES-GCM used for pairing and sessions (`Crypto`). |
 
 The components are plain ESP-IDF and work with or without Arduino as a component.
@@ -37,6 +37,8 @@ honor it.
 
 - `tools/text_test/run.sh` builds `Text.cpp` on the Mac with the address and
   undefined-behavior sanitizers and runs its tests.
+- `tools/mirabox_test/run.sh` builds `MiraboxProtocol.cpp` on the Mac the same way and checks
+  the Mirabox commands, image pieces, key reports, model table and report descriptor parsing.
 - `tools/make_font.swift` regenerates `components/deckkit_deck/Font.h` from Inter.
 
 ## License
