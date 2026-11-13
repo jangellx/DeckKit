@@ -13,6 +13,7 @@
 #include "lwip/sockets.h"
 
 #include "SetupPageHTML.h"
+#include "SecureStorage.h"
 #include "SetupProtocol.h"
 #include "Text.h"
 #include "Timing.h"
@@ -426,6 +427,11 @@ esp_err_t SetupPage::handleStatus( httpd_req *request ) {
 	cJSON_AddStringToObject( json, "ip", ip );
 	cJSON_AddStringToObject( json, "error", connected ? "" : self->errorText() );
 	cJSON_AddBoolToObject( json, "canExit", self->canExit() );
+	// A new device with plain storage: saving its first network encrypts storage, unless the
+	// page's checkbox says Standard.
+	cJSON_AddBoolToObject( json, "encryptOffered", self->wifi_->storageChoiceOpen() );
+	cJSON_AddBoolToObject( json, "standardStorage", self->wifi_->standardStorage() );
+	cJSON_AddStringToObject( json, "storage", SecureStorage::stateName() );
 	cJSON_AddBoolToObject( json, "leaving", self->joined_ || self->exitRequested_ );
 	return sendJSON( request, json );
 }
@@ -454,6 +460,8 @@ esp_err_t SetupPage::handleSave( httpd_req *request ) {
 	else if( SetupProtocol::formValue( body, length, "password", password, sizeof( password ) )
 			 && password[0] && ( strlen( password ) < 8 || strlen( password ) > 64 ) )
 		error = "Wi-Fi passwords have 8 to 64 characters.";
+	char encrypt[4]    = {};
+	bool encryptChosen = SetupProtocol::formValue( body, length, "encrypt", encrypt, sizeof( encrypt ) );
 	memset( body, 0, sizeof( body ) );
 	if( error ) {
 		memset( password, 0, sizeof( password ) );
@@ -467,6 +475,9 @@ esp_err_t SetupPage::handleSave( httpd_req *request ) {
 		return err;
 	}
 
+	// The checkbox, on a new device: applies when the network is saved, once it works.
+	if( encryptChosen && self->wifi_->storageChoiceOpen() )
+		self->wifi_->setStandardStorage( strcmp( encrypt, "1" ) != 0 );
 	{
 		std::lock_guard<std::mutex> lock( self->textLock_ );
 		strlcpy( self->trySSID_, ssid, sizeof( self->trySSID_ ) );

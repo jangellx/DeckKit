@@ -12,6 +12,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "SecureStorage.h"
 #include "Text.h"
 #include "Timing.h"
 #include "WiFiStation.h"
@@ -170,6 +171,18 @@ void ImprovSerial::handleCommand( uint8_t command, const uint8_t *args, size_t l
 			char ssid[33];
 			Text::displayable( wifi_->savedSSID(), ssid, sizeof( ssid ) );
 			sendResult( Improv::kWiFiNetwork, { ssid, wifi_->hasSaved() && wifi_->isConnected() ? "YES" : "NO", info_.hostname } );
+			break;
+		}
+
+		case Improv::kStorage: {
+			if( length > 1 || ( length == 1 && args[0] > 1 ) ) {
+				sendError( Improv::Error::InvalidRPC );
+				return;
+			}
+			if( length == 1 && wifi_->storageChoiceOpen() )
+				wifi_->setStandardStorage( args[0] == 0 );
+			const char *setup = !wifi_->storageChoiceOpen() ? "none" : wifi_->standardStorage() ? "standard" : "encrypt";
+			sendResult( Improv::kStorage, { SecureStorage::stateName(), setup } );
 			break;
 		}
 

@@ -1,5 +1,6 @@
 // SetupPage's page: everything inline, since a phone on the setup network has no internet.
-// Adapted from ESPDeck's setup page (Wi-Fi only: no device name, pairing or factory reset).
+// Adapted from ESPDeck's setup page: the Wi-Fi network, and on a new device the choice of
+// encrypted or Standard storage (no device name, pairing or factory reset).
 // The product's name comes from /status.
 #pragma once
 
@@ -38,6 +39,8 @@ button{font:inherit;font-weight:600;border:0;border-radius:12px;padding:13px 16p
 button:disabled{opacity:.5;cursor:default}
 .hint{font-size:14px;color:var(--muted);margin:4px 0 0}
 .error{color:var(--bad);margin-top:12px}
+.check{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:400;color:var(--text);margin:18px 0 0}
+.check input{width:20px;height:20px;margin:0;padding:0;flex:none;-webkit-appearance:checkbox;appearance:auto;accent-color:var(--accent)}
 .hidden{display:none}
 </style></head><body><main>
 <h1 id="product">Setup</h1>
@@ -49,6 +52,8 @@ button:disabled{opacity:.5;cursor:default}
 <div id="manualbox" class="hidden"><label for="ssid">Network name</label><input id="ssid" maxlength="32" autocapitalize="none" autocorrect="off" spellcheck="false"></div>
 <div id="passbox"><label for="pass">Password</label>
 <div class="row"><input id="pass" type="password" maxlength="64" autocapitalize="none" autocorrect="off" spellcheck="false"><button type="button" class="secondary small" id="show">Show</button></div></div>
+<div id="encbox" class="hidden"><label class="check" for="enc"><input id="enc" type="checkbox" checked>Encrypt stored secrets (recommended)</label>
+<p class="hint">Burns a one-time key into this chip, so encryption stays on for good. The Wi-Fi network can still be changed.</p></div>
 <p class="hint error hidden" id="formerr"></p>
 <button class="primary" id="save" type="submit">Save &amp; Connect</button>
 </form>
@@ -57,7 +62,7 @@ button:disabled{opacity:.5;cursor:default}
 </main>
 <script>
 const $=id=>document.getElementById(id),OTHER='\u0001other',sleep=ms=>new Promise(r=>setTimeout(r,ms));
-let st={},nets=[],saveError='';
+let st={},nets=[],saveError='',encEdited=false;
 function bars(r){const n=r>-60?4:r>-70?3:r>-80?2:1;return '▂▄▆█'.slice(0,n)+'▁'.repeat(4-n)}
 function opt(v,t){const o=document.createElement('option');o.value=v;o.textContent=t;$('net').appendChild(o)}
 function fillNets(){
@@ -91,11 +96,14 @@ function render(){
  else{t='Not set up yet';d='Choose a Wi-Fi network below.'}
  $('dot').className='dot '+c;$('stext').textContent=t;$('sdetail').textContent=d;
  $('exitcard').classList.toggle('hidden',!st.canExit||st.leaving);
- $('fw').textContent='Firmware '+st.firmware;
+ $('encbox').classList.toggle('hidden',!st.encryptOffered);
+ if(!encEdited)$('enc').checked=!st.standardStorage;
+ $('fw').textContent='Firmware '+st.firmware+(st.storage==='encrypted'?' · stored secrets encrypted':'');
  if(st.saveError!==saveError){saveError=st.saveError;err(saveError)}
 }
 async function poll(){try{st=await(await fetch('/status')).json();render()}catch(e){}setTimeout(poll,1500)}
 $('net').onchange=update;
+$('enc').onchange=()=>encEdited=true;
 $('rescan').onclick=()=>scan(true);
 $('show').onclick=()=>{const p=$('pass'),s=p.type==='password';p.type=s?'text':'password';$('show').textContent=s?'Hide':'Show'};
 $('form').onsubmit=async e=>{
@@ -105,7 +113,8 @@ $('form').onsubmit=async e=>{
  if(pass&&pass.length<8)return err('Wi-Fi passwords have at least 8 characters.');
  $('save').disabled=true;
  try{
-  const r=await(await fetch('/save',{method:'POST',body:new URLSearchParams({ssid,password:pass})})).json();
+  const f={ssid,password:pass};if(st.encryptOffered)f.encrypt=$('enc').checked?'1':'0';
+  const r=await(await fetch('/save',{method:'POST',body:new URLSearchParams(f)})).json();
   if(r.ok)$('pass').value='';else err(r.error||'Couldn’t save.');
  }catch(e){err('Couldn’t reach the device.')}
  $('save').disabled=false;

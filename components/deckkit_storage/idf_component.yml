@@ -1,0 +1,4 @@
+description: Encrypted NVS with a key in an eFuse key block, burned when the project decides; from ESPDeck's SecureNVS.
+license: MIT
+dependencies:
+  idf: ">=5.1"

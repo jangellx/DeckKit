@@ -33,6 +33,10 @@ namespace Improv {
 	// password), whether it's on it, and its hostname. The spec reserves nothing for vendors,
 	// so these count down from the top of the range.
 	constexpr uint8_t kWiFiNetwork  = 0xFE;
+	// ESPDeck's too: how NVS is kept ("plain", "encrypted", "unsupported") and what the first
+	// network will do ("encrypt", "standard", or "none" with no choice to make); with one byte,
+	// 0 chooses Standard storage for a new device's setup and 1 encrypted.
+	constexpr uint8_t kStorage      = 0xFD;
 
 	// The current-state values.
 	enum class State : uint8_t {

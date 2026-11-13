@@ -8,8 +8,11 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "nvs.h"
 
+#include "SecureStorage.h"
 #include "Text.h"
 
 static const char *TAG = "WiFi";
@@ -20,6 +23,8 @@ namespace {
 	constexpr uint32_t    kTryRetryDelay = 1000;   // ms between attempts on a network being tried
 	constexpr size_t      kMaxScanned    = 32;     // networks read from a scan
 	constexpr size_t      kSafeText      = 40;     // a network name made printable, for the log
+	constexpr uint32_t    kSaveStack     = 6144;   // bytes: encrypting NVS holds every entry in RAM
+	constexpr UBaseType_t kSavePriority  = 4;
 
 	esp_timer_handle_t timer( void *handle ) {
 		return static_cast<esp_timer_handle_t>( handle );
@@ -66,6 +71,10 @@ bool WiFiStation::begin( const char *hostname ) {
 	esp_event_handler_register( IP_EVENT, IP_EVENT_STA_GOT_IP, onEvent, this );
 
 	loadSaved();
+	TaskHandle_t saver = nullptr;
+	if( xTaskCreate( saveTask, "wifi_save", kSaveStack, this, kSavePriority, &saver ) != pdPASS )
+		return false;
+	saver_ = saver;
 	esp_wifi_set_mode( WIFI_MODE_STA );
 	// Power saving delays packets by up to a beacon interval; keys and acknowledgments are
 	// small and want to go now.
@@ -151,12 +160,32 @@ void WiFiStation::onEvent( void *arg, esp_event_base_t base, int32_t id, void *d
 		self->lastReason_ = 0;
 		if( self->attempt_ == Attempt::Joining ) {
 			esp_timer_stop( timer( self->tryTimer_ ) );
-			self->save( self->trySSID_, self->tryPassword_ );
-			memset( self->tryPassword_, 0, sizeof( self->tryPassword_ ) );
-			self->attempt_ = Attempt::Joined;
+			xTaskNotifyGive( static_cast<TaskHandle_t>( self->saver_ ) );   // saveTask() saves it
 		}
 		char safe[kSafeText];
 		ESP_LOGI( TAG, "On %s as " IPSTR, Text::printable( self->ssid_, safe, sizeof( safe ) ), IP2STR( &info->ip_info.ip ) );
+	}
+}
+
+void WiFiStation::saveTask( void *arg ) {
+	auto *self = static_cast<WiFiStation *>( arg );
+	while( true ) {
+		ulTaskNotifyTake( pdTRUE, portMAX_DELAY );
+		if( self->attempt_ != Attempt::Joining )
+			continue;
+		// A new device's first network goes into encrypted NVS: the key is burned and what's
+		// there moves across before the password is written, so it never touches plain flash.
+		if( self->encryptsAtSetup() ) {
+			const char *error = nullptr;
+			SecureStorage::Outcome outcome = SecureStorage::encryptForSetup( error );
+			if( outcome == SecureStorage::Outcome::Encrypted )
+				ESP_LOGI( TAG, "Storage encrypted for this device's first network" );
+			else
+				ESP_LOGW( TAG, "Storage not encrypted: %s", error ? error : "?" );
+		}
+		self->save( self->trySSID_, self->tryPassword_ );
+		memset( self->tryPassword_, 0, sizeof( self->tryPassword_ ) );
+		self->attempt_ = Attempt::Joined;
 	}
 }
 
@@ -172,7 +201,29 @@ void WiFiStation::loadSaved() {
 	size = sizeof( password_ );
 	if( nvs_get_str( handle, "password", password_, &size ) != ESP_OK )
 		password_[0] = '\0';
+	uint8_t standard = 0;
+	standard_ = nvs_get_u8( handle, "standard", &standard ) == ESP_OK && standard;
 	nvs_close( handle );
+}
+
+void WiFiStation::setStandardStorage( bool standard ) {
+	if( standard == standard_ )
+		return;
+	standard_ = standard;
+	nvs_handle_t handle;
+	if( nvs_open( kNamespace, NVS_READWRITE, &handle ) != ESP_OK )
+		return;
+	if( standard )
+		nvs_set_u8( handle, "standard", 1 );
+	else
+		nvs_erase_key( handle, "standard" );
+	nvs_commit( handle );
+	nvs_close( handle );
+	ESP_LOGI( TAG, "Setup storage: %s", standard ? "Standard" : "encrypted" );
+}
+
+bool WiFiStation::storageChoiceOpen() const {
+	return !hasSaved() && SecureStorage::state() == SecureStorage::State::Plain;
 }
 
 void WiFiStation::save( const char *ssid, const char *password ) {

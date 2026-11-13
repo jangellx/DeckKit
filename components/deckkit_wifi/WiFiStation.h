@@ -1,6 +1,8 @@
 // The Wi-Fi station on plain ESP-IDF: joins the saved network and keeps it joined, tries a new
 // one (from Improv, say) and saves it only once it works, and scans. The network is kept in
-// NVS (namespace "deckkit_wifi") in plain flash: anyone holding the board can read it.
+// NVS (namespace "deckkit_wifi"). As in ESPDeck, a new device's first network is saved into
+// encrypted NVS (deckkit_storage's SecureStorage burns its eFuse key first), unless Standard
+// storage was chosen for its setup; NVS must be set up with SecureStorage::init().
 //
 // Its callbacks run on ESP-IDF's event task; everything else may be called from any task.
 #pragma once
@@ -37,6 +39,16 @@ public:
 	const char *savedSSID() const { return ssid_; }
 	bool        hasSaved() const  { return ssid_[0] != '\0'; }
 
+	// Standard storage (plain NVS) was chosen for setting up this device, so its first network
+	// doesn't burn a key and encrypt. Kept, in NVS, until it's erased.
+	bool standardStorage() const { return standard_; }
+	void setStandardStorage( bool standard );
+	// Whether there's still a choice to make: a new device (no network saved) with plain storage
+	// and a free eFuse key block.
+	bool storageChoiceOpen() const;
+	// Whether saving the first network will encrypt: the choice is open and Standard wasn't chosen.
+	bool encryptsAtSetup() const { return storageChoiceOpen() && !standard_; }
+
 	// On a network, with an address.
 	bool isConnected() const { return connected_; }
 
@@ -62,6 +74,9 @@ public:
 
 private:
 	static void onEvent( void *arg, esp_event_base_t base, int32_t id, void *data );
+	// Saves a network that tryNetwork() joined, encrypting NVS first on a new device; on its own
+	// task, since that takes longer and more stack than the event task has.
+	static void saveTask( void *arg );
 	static void onRetry( void *arg );
 	static void onTryTimeout( void *arg );
 
@@ -79,6 +94,8 @@ private:
 	// The network tryNetwork() is trying.
 	char         trySSID_[33] = {};
 	char         tryPassword_[65] = {};
+	bool         standard_   = false;
+	void        *saver_      = nullptr;   // TaskHandle_t of saveTask()
 
 	static constexpr size_t kMaxFound = 32;
 	Network                 found_[kMaxFound] = {};

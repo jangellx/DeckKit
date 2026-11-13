@@ -8,10 +8,11 @@ that's being built next.
 |---|---|
 | `deckkit_deck` | The Stream Deck driver (USB host, every model with keys) and `KeyImage`, which draws the key images the firmware makes itself: text, QR codes and the pairing code, encoded as BMP or JPEG for the deck. Experimental: Mirabox's decks and their rebadges (Ajazz, Fifine, upHere, Mars Gaming, Redragon and others), in `MiraboxProtocol.h`. |
 | `deckkit_util` | Checks on text that comes from outside (`Text`), wrap-safe millisecond deadlines (`Timing`), and the X25519, HMAC and AES-GCM used for pairing and sessions (`Crypto`). |
-| `deckkit_wifi` | Wi-Fi on plain ESP-IDF: a station that joins the saved network and saves a new one only once it works (`WiFiStation`), Improv Wi-Fi over serial for setting it from ESP Web Tools, improv-wifi.com in Chrome, or ESPDeck Bridge's USB Setup (`ImprovSerial`), and a setup page for phones: its own access point with a random password, captive-portal DNS and the page (`SetupPage`). Needs `deckkit_util`. The network is kept in plain NVS for now. |
+| `deckkit_wifi` | Wi-Fi on plain ESP-IDF: a station that joins the saved network and saves a new one only once it works (`WiFiStation`), Improv Wi-Fi over serial for setting it from ESP Web Tools, improv-wifi.com in Chrome, or ESPDeck Bridge's USB Setup (`ImprovSerial`), and a setup page for phones: its own access point with a random password, captive-portal DNS and the page (`SetupPage`). Needs `deckkit_util` and `deckkit_storage`. On a board that can, the first network saved also turns on encrypted storage (burning an eFuse key if there isn't one), unless Standard storage is picked on the setup page or over Improv. |
+| `deckkit_storage` | NVS encrypted with a key kept in eFuse (`SecureStorage`): call `SecureStorage::init()` in place of `nvs_flash_init()`. It finds an HMAC key already burned and moves plain settings into encrypted storage, and can burn one (`encrypt()`, `encryptForSetup()`); burning is permanent. |
 | `deckkit_led` | The dev kit's RGB LED as a status light, with ESPDeck's colors (`StatusLight`), on Espressif's `led_strip` driver and its own task. Needs `deckkit_util`. |
 
-The components are plain ESP-IDF. `deckkit_deck` and `deckkit_util` work with or without Arduino as a component; `deckkit_wifi` and `deckkit_led` drive the hardware themselves, so they're for plain ESP-IDF projects.
+The components are plain ESP-IDF. `deckkit_deck` and `deckkit_util` work with or without Arduino as a component; `deckkit_wifi`, `deckkit_storage` and `deckkit_led` drive the hardware themselves, so they're for plain ESP-IDF projects.
 
 ## Using it
 
